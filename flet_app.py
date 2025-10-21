@@ -131,6 +131,10 @@ def main(page: ft.Page):
     page.window_width = 980
     page.window_height = 720
     page.theme_mode = ft.ThemeMode.LIGHT
+    
+    # Configuração para minimizar para bandeja
+    page.window_prevent_close = True
+    page.window_always_on_top = False
 
     # Carrega configurações salvas
     config = load_config()
@@ -142,7 +146,12 @@ def main(page: ft.Page):
     show_advanced_logs = ft.Ref[ft.Switch]()
     current_log_view = ft.Ref[ft.Container]()
     
-    status_badge = ft.Chip(label=ft.Text("Parado"), color=ft.Colors.RED_400)
+    status_badge = ft.Container(
+        content=ft.Text("Parado", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=14),
+        bgcolor=ft.Colors.RED_600,
+        padding=ft.padding.symmetric(horizontal=16, vertical=8),
+        border_radius=16,
+    )
     
     # Variável global para impressora selecionada
     selected_printer = {"name": config.get("selected_printer", None)}
@@ -151,6 +160,9 @@ def main(page: ft.Page):
     settings_dialog = ft.Ref[ft.AlertDialog]()
     printer_dropdown = ft.Ref[ft.Dropdown]()
     printer_status_text = ft.Ref[ft.Text]()
+    
+    # Controle de estado da janela
+    window_state = {"minimized_to_tray": False, "really_close": False}
 
     def append_simple_log(message, status="info"):
         """Adiciona log simplificado para o usuário"""
@@ -243,8 +255,8 @@ def main(page: ft.Page):
             return
         if "servidor flask iniciado" in l:
             append_simple_log("🚀 Servidor iniciado", "success")
-            status_badge.label = ft.Text("Executando")
-            status_badge.color = ft.Colors.GREEN_400
+            status_badge.content = ft.Text("Executando", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=14)
+            status_badge.bgcolor = ft.Colors.GREEN_600
             page.update()
             return
         if "fila da impressora" in l and "limpa" in l:
@@ -266,10 +278,17 @@ def main(page: ft.Page):
     def load_available_printers():
         """Carrega lista de impressoras disponíveis"""
         try:
+            # Configurações para ocultar janela do console
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+            
             result = subprocess.run([
                 "powershell", "-Command", 
                 "Get-Printer | Select-Object -ExpandProperty Name"
-            ], capture_output=True, text=True, timeout=10)
+            ], capture_output=True, text=True, timeout=10,
+            startupinfo=startupinfo,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
             
             if result.returncode == 0:
                 printers = [p.strip() for p in result.stdout.splitlines() if p.strip()]
@@ -316,28 +335,59 @@ def main(page: ft.Page):
             page.update()
             return
         
+        # Verifica se a impressora está disponível
+        printer_name = printer_dropdown.current.value
+        if not verificar_impressora_online(printer_name):
+            # Mensagem compacta no status
+            printer_status_text.current.value = (
+                "⚠️ Impressora não disponível\n\n"
+                "Verifique:\n"
+                "1. Se a impressora está conectada corretamente\n"
+                "   na sua máquina (cabo USB/Rede)\n"
+                "2. Se a impressora está ligada\n"
+                "3. Se os drivers estão instalados corretamente\n"
+                "4. Nas configurações do Windows:\n"
+                "   Dispositivos > Impressoras e scanners"
+            )
+            printer_status_text.current.color = ft.Colors.ORANGE_700
+            append_simple_log(f"⚠️ Impressora '{printer_name}' não disponível", "warning")
+            append_log(f"Impressora '{printer_name}' não encontrada ou está offline", "WARNING")
+            append_log("╔═══════════════════════════════════════════════════╗", "WARNING")
+            append_log("║  Verifique:                                       ║", "WARNING")
+            append_log("║  1. Se a impressora está conectada corretamente  ║", "WARNING")
+            append_log("║     na sua máquina (cabo USB/Rede)               ║", "WARNING")
+            append_log("║  2. Se a impressora está ligada                  ║", "WARNING")
+            append_log("║  3. Se os drivers estão instalados corretamente ║", "WARNING")
+            append_log("║  4. Nas configurações do Windows:                ║", "WARNING")
+            append_log("║     Dispositivos > Impressoras e scanners        ║", "WARNING")
+            append_log("╚═══════════════════════════════════════════════════╝", "WARNING")
+            page.update()
+            return
+        
         # Salva localmente
-        selected_printer["name"] = printer_dropdown.current.value
+        selected_printer["name"] = printer_name
         
         # Salva no arquivo
         config = load_config()
         config["selected_printer"] = selected_printer["name"]
         
         if save_config(config):
-            printer_status_text.current.value = f"✓ Salvo: {selected_printer['name']}"
-            printer_status_text.current.color = ft.Colors.GREEN_700
             append_simple_log(f"🖨️ Impressora configurada: {selected_printer['name']}", "success")
+            append_log(f"Impressora '{selected_printer['name']}' salva com sucesso", "INFO")
             
             # Limpa cache das funções de impressão
             if hasattr(imprimir, '_cached_printer'):
                 delattr(imprimir, '_cached_printer')
             if hasattr(imprimir_qrcode, '_cached_printer'):
                 delattr(imprimir_qrcode, '_cached_printer')
+            
+            # Fecha o diálogo automaticamente
+            settings_dialog.current.open = False
+            page.update()
         else:
             printer_status_text.current.value = "❌ Erro ao salvar configuração"
             printer_status_text.current.color = ft.Colors.RED_700
-        
-        page.update()
+            page.update()
     
     def close_settings(e):
         """Fecha diálogo de configurações"""
@@ -352,11 +402,18 @@ def main(page: ft.Page):
     def limpar_fila_impressora(impressora):
         """Limpa a fila da impressora de forma tolerante a erros"""
         try:
+            # Configurações para ocultar janela do console
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+            
             # Tenta primeiro com PowerShell
             result = subprocess.run([
                 "powershell", "-Command", 
                 f"Get-PrintJob -PrinterName '{impressora}' | Remove-PrintJob"
-            ], capture_output=True, text=True, timeout=10)
+            ], capture_output=True, text=True, timeout=10,
+            startupinfo=startupinfo,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
             
             if result.returncode == 0:
                 append_log(f"Fila da impressora '{impressora}' limpa com sucesso", "INFO")
@@ -382,10 +439,17 @@ def main(page: ft.Page):
     def find_installed_printers():
         """Lista todas as impressoras instaladas no sistema"""
         try:
+            # Configurações para ocultar janela do console
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+            
             result = subprocess.run([
                 "powershell", "-Command", 
                 "Get-Printer | Select-Object -ExpandProperty Name"
-            ], capture_output=True, text=True, timeout=10)
+            ], capture_output=True, text=True, timeout=10,
+            startupinfo=startupinfo,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
             
             if result.returncode == 0:
                 printers = [p.strip() for p in result.stdout.splitlines() if p.strip()]
@@ -448,18 +512,50 @@ def main(page: ft.Page):
             return preferred_name or "ticket-printer"
 
     def verificar_impressora_online(impressora):
-        """Verifica se a impressora está disponível de forma tolerante"""
+        """Verifica se a impressora está disponível e online"""
         try:
+            # Primeiro verifica se está instalada
             installed = find_installed_printers()
             
-            # Verifica se a impressora está na lista de instaladas
+            impressora_encontrada = None
             for p in installed:
                 if p.lower() == impressora.lower() or _normalize_printer_key(p) == _normalize_printer_key(impressora):
-                    append_log(f"Impressora '{impressora}' detectada no sistema", "INFO")
-                    return True
+                    impressora_encontrada = p
+                    break
             
-            append_log(f"Impressora '{impressora}' não encontrada nas impressoras instaladas", "WARNING")
-            return False
+            if not impressora_encontrada:
+                append_log(f"Impressora '{impressora}' não encontrada nas impressoras instaladas", "WARNING")
+                return False
+            
+            # Configurações para ocultar janela do console
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+            
+            # Agora verifica o STATUS da impressora (se está online/offline)
+            result = subprocess.run([
+                "powershell", "-Command",
+                f"Get-Printer -Name '{impressora_encontrada}' | Select-Object -ExpandProperty PrinterStatus"
+            ], capture_output=True, text=True, timeout=5,
+            startupinfo=startupinfo,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+            
+            if result.returncode == 0:
+                status = result.stdout.strip().lower()
+                append_log(f"Status da impressora '{impressora}': {status}", "INFO")
+                
+                # Verifica se o status indica que está offline/erro
+                if "offline" in status or "error" in status or "paused" in status:
+                    append_log(f"Impressora '{impressora}' está {status} (desconectada ou com erro)", "WARNING")
+                    return False
+                
+                append_log(f"Impressora '{impressora}' detectada e online", "INFO")
+                return True
+            else:
+                # Se não conseguiu obter status, assume que está online (para não bloquear)
+                append_log(f"Não foi possível verificar status da impressora '{impressora}'", "WARNING")
+                append_log(f"Impressora detectada no sistema", "INFO")
+                return True
             
         except Exception as e:
             append_log(f"Erro na verificação da impressora: {e}", "ERROR")
@@ -510,16 +606,25 @@ def main(page: ft.Page):
                     return "Erro: Configure uma impressora nas Configurações", 500
                 impressora = selected_printer["name"]
             
+            # Limpa a fila da impressora antes de imprimir
+            limpar_fila_impressora(impressora)
+            
             # Prepara comando de impressão ultra-rápido
             command = ['mspaint', '/pt', image_path, impressora]
             
             # Inicia processo completamente assíncrono (fire and forget)
+            # CREATE_NO_WINDOW evita janela de console piscando
             try:
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+                
                 subprocess.Popen(
                     command, 
                     stdout=subprocess.DEVNULL, 
                     stderr=subprocess.DEVNULL,
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
+                    startupinfo=startupinfo if os.name == 'nt' else None
                 )
                 
                 # Retorna IMEDIATAMENTE sem esperar nada
@@ -585,16 +690,25 @@ def main(page: ft.Page):
                     return "Erro: Configure uma impressora nas Configurações", 500
                 impressora = selected_printer["name"]
             
+            # Limpa a fila da impressora antes de imprimir
+            limpar_fila_impressora(impressora)
+            
             # Prepara comando de impressão ultra-rápido
             command = ['mspaint', '/pt', image_path, impressora]
             
             # Inicia processo completamente assíncrono (fire and forget)
+            # CREATE_NO_WINDOW evita janela de console piscando
             try:
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+                
                 subprocess.Popen(
                     command, 
                     stdout=subprocess.DEVNULL, 
                     stderr=subprocess.DEVNULL,
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
+                    startupinfo=startupinfo if os.name == 'nt' else None
                 )
                 
                 # Retorna IMEDIATAMENTE sem esperar nada
@@ -696,6 +810,35 @@ def main(page: ft.Page):
     def handle_test_status(e):
         call_endpoint("/status")
 
+    # Funções de controle de janela
+    window_state = {"minimized_to_tray": False, "really_close": False}
+    
+    def show_window(e):
+        """Mostra a janela novamente"""
+        page.window_visible = True
+        window_state["minimized_to_tray"] = False
+        page.update()
+        append_log("Janela restaurada da bandeja", "INFO")
+    
+    def quit_app(e):
+        """Encerra o aplicativo completamente"""
+        append_log("Encerrando aplicação...", "INFO")
+        window_state["really_close"] = True
+        stop_flag.set()
+        # Aguarda um momento para exibir os logs
+        page.update()
+        threading.Timer(0.5, lambda: os._exit(0)).start()
+
+    def on_window_event(e):
+        """Gerencia eventos da janela"""
+        if e.data == "close":
+            # Sempre minimiza para bandeja (usuário deve usar botão Sair para fechar)
+            page.window_visible = False
+            window_state["minimized_to_tray"] = True
+            append_log("Aplicação minimizada para bandeja do sistema", "INFO")
+            append_simple_log("🔽 Minimizado para bandeja - Use o botão Sair para fechar", "info")
+            page.update()
+
     # Toggle de logs
     log_toggle = ft.Row(
         [
@@ -741,15 +884,42 @@ def main(page: ft.Page):
             padding=20,
         ),
         actions=[
-            ft.TextButton("Cancelar", on_click=close_settings),
+            ft.TextButton("Fechar", on_click=close_settings),
             ft.FilledButton("Salvar", icon=ft.Icons.SAVE, on_click=save_printer_config),
         ],
         actions_alignment=ft.MainAxisAlignment.END,
     )
 
+    # Logo e título
+    logo_and_title = ft.Row(
+        [
+            # Logo (se existir o arquivo)
+            ft.Image(
+                src="assets/logo.png",
+                width=40,
+                height=40,
+                fit=ft.ImageFit.CONTAIN,
+                visible=os.path.exists("assets/logo.png"),
+            ) if os.path.exists("assets/logo.png") else ft.Icon(
+                ft.Icons.PRINT_ROUNDED,
+                size=40,
+                color=ft.Colors.BLUE_700,
+            ),
+            ft.Column(
+                [
+                    ft.Text("Sistema de Impressão de Senhas", size=16, weight=ft.FontWeight.BOLD),
+                    ft.Text("Meu Atendimento Virtual", size=12, color=ft.Colors.GREY_600),
+                ],
+                spacing=0,
+            ),
+        ],
+        spacing=10,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+    )
+
     controls_bar = ft.Row(
         [
-            ft.Text("🖥️ Servidor de Impressão", size=16, weight=ft.FontWeight.BOLD),
+            logo_and_title,
             status_badge,
             ft.Container(expand=True),
             ft.IconButton(
@@ -761,6 +931,13 @@ def main(page: ft.Page):
             ft.FilledTonalButton("Testar Status", icon=ft.Icons.SEARCH, on_click=handle_test_status),
             ft.FilledTonalButton("Testar Impressão", icon=ft.Icons.PRINT, on_click=handle_test_print),
             ft.FilledTonalButton("Testar QRCode", icon=ft.Icons.QR_CODE_2, on_click=handle_test_qr),
+            ft.FilledButton(
+                "Sair",
+                icon=ft.Icons.EXIT_TO_APP,
+                on_click=quit_app,
+                bgcolor=ft.Colors.RED_700,
+                tooltip="Fechar completamente o aplicativo",
+            ),
         ],
         alignment=ft.MainAxisAlignment.START,
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -832,6 +1009,7 @@ def main(page: ft.Page):
         append_simple_log("⚠️ Configure a impressora", "warning")
     
     append_log("Servidor de impressão inicializando...", "INFO")
+    append_simple_log("💡 Fechar a janela minimiza para bandeja", "info")
     
     # Testa se o servidor está respondendo após um breve delay
     def check_server_status():
@@ -847,12 +1025,16 @@ def main(page: ft.Page):
 
     threading.Thread(target=check_server_status, daemon=True).start()
 
-    def on_close(e):
-        append_log("Aplicação sendo encerrada...", "INFO")
-        stop_flag.set()
-        page.window_destroy()
-
-    page.on_window_event = lambda e: on_close(e) if e.data == "close" else None
+    # Configura o evento de janela
+    page.on_window_event = on_window_event
+    
+    # Configuração do ícone da bandeja
+    page.window_title_bar_hidden = False
+    page.window_title_bar_buttons_hidden = False
+    
+    # Adiciona ícone de bandeja (system tray)
+    if hasattr(page, 'system_overlay_style'):
+        page.system_overlay_style = ft.SystemOverlayStyle.DARK
 
 
 if __name__ == "__main__":

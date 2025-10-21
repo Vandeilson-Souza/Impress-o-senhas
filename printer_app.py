@@ -103,7 +103,17 @@ def printer_connect():
 
         command = ['mspaint', '/pt', imagem, impressora, '1', largura_pagina, altura_pagina, '/z', fator_zoom]
         print(f"Executando comando: {command}")
-        subprocess.check_call(command)
+        
+        # Configurações para ocultar a janela do console
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        
+        subprocess.check_call(
+            command,
+            startupinfo=startupinfo,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+        )
         print("Comando executado com sucesso")
         try:
             requests.post("http://localhost:5678/log", json={"message": f"Impressão realizada com código {code}"}, timeout=3)
@@ -138,8 +148,16 @@ def printer_connect_qrcode():
         altura_pagina = '1200'
         fator_zoom = '200'
 
-        subprocess.run(['mspaint', '/pt', image, impressora, '1', largura_pagina, altura_pagina, '/z', fator_zoom],
-                       shell=True)
+        # Configurações para ocultar a janela do console
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        
+        subprocess.run(
+            ['mspaint', '/pt', image, impressora, '1', largura_pagina, altura_pagina, '/z', fator_zoom],
+            startupinfo=startupinfo,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+        )
         try:
             requests.post("http://localhost:5678/log", json={"message": f"Impressão com QRCode realizada com código {code or qrcode}"}, timeout=3)
         except Exception:
