@@ -31,7 +31,7 @@ echo [4/4] Compilando executavel...
 echo Isso pode demorar alguns minutos...
 
 pyinstaller --onefile --noconsole --name "Sistema_Impressao_Senhas" ^
-    --icon="assets\icon.ico" ^
+    --icon="assets\logoicone.ico" ^
     --add-data "assets;assets" ^
     --hidden-import "pystray._win32" ^
     --hidden-import "PIL._tkinter_finder" ^
@@ -71,3 +71,18 @@ if exist "Sistema_Impressao_Senhas.exe" (
 
 echo Pressione qualquer tecla para finalizar...
 pause >nul
+
+:: ===============================================
+:: ALTERNATIVA: Build usando arquivo .spec
+:: ===============================================
+:: Descomente as linhas abaixo e comente o comando pyinstaller acima
+:: para usar o arquivo SistemaImpressaoSenhas.spec
+::
+:: pyinstaller SistemaImpressaoSenhas.spec
+::
+:: O arquivo .spec já inclui:
+:: - Icone: assets\logoicone.ico
+:: - Assets: pasta assets incluída
+:: - Console: Desabilitado
+:: ===============================================
+

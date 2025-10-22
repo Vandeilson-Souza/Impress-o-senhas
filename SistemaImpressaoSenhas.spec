@@ -5,7 +5,7 @@ a = Analysis(
     ['flet_app.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('assets', 'assets')],  # Inclui a pasta assets no executável
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -35,4 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='assets\\logoicone.ico',  # Adiciona o ícone ao executável
 )
