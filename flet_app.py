@@ -28,18 +28,27 @@ def load_config():
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except:
-            pass
-    return {"selected_printer": None}
+                config = json.load(f)
+                print(f"📋 Configuração carregada: {config}")
+                return config
+        except Exception as e:
+            print(f"⚠️ Erro ao carregar configuração: {e}")
+    else:
+        print(f"📄 Arquivo de configuração não existe, criando padrão")
+    
+    default_config = {"selected_printer": None}
+    save_config(default_config)
+    return default_config
 
 def save_config(config):
     """Salva configurações"""
     try:
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
+        print(f"✅ Configuração salva: {config}")
         return True
-    except:
+    except Exception as e:
+        print(f"❌ Erro ao salvar configuração: {e}")
         return False
 
 
@@ -172,8 +181,11 @@ class PrintingBackend:
                 config = load_config()
                 impressora = config.get("selected_printer")
                 
-                if not impressora:
-                    print(f"❌ Nenhuma impressora configurada!")
+                print(f"🔍 Configuração carregada no Flask: {config}")
+                print(f"🖨️ Impressora selecionada: '{impressora}'")
+                
+                if not impressora or impressora == "null" or (isinstance(impressora, str) and impressora.strip() == ""):
+                    print(f"❌ Nenhuma impressora configurada! Valor: {repr(impressora)}")
                     return "Erro: Configure uma impressora nas Configurações", 500
                 
                 # Prepara comando de impressão
@@ -235,8 +247,11 @@ class PrintingBackend:
                 config = load_config()
                 impressora = config.get("selected_printer")
                 
-                if not impressora:
-                    print(f"❌ Nenhuma impressora configurada!")
+                print(f"🔍 Configuração carregada no Flask QR: {config}")
+                print(f"🖨️ Impressora selecionada QR: '{impressora}'")
+                
+                if not impressora or impressora == "null" or (isinstance(impressora, str) and impressora.strip() == ""):
+                    print(f"❌ Nenhuma impressora configurada! Valor QR: {repr(impressora)}")
                     return "Erro: Configure uma impressora nas Configurações", 500
                 
                 # Prepara comando de impressão
@@ -276,11 +291,13 @@ class PrintingBackend:
         def shutdown():
             """Endpoint para desligar o servidor"""
             self.running = False
-            func = flask_request.environ.get('werkzeug.server.shutdown')
-            if func is None:
-                raise RuntimeError('Not running with the Werkzeug Server')
-            func()
-            return 'Server shutting down...'
+            # Usa threading para encerrar o servidor de forma segura
+            def shutdown_server():
+                time.sleep(0.1)  # Pequeno delay para enviar resposta
+                os._exit(0)
+            
+            threading.Thread(target=shutdown_server, daemon=True).start()
+            return 'Server shutting down...', 200
             
         return app
     
@@ -319,10 +336,19 @@ class PrintingBackend:
             return
             
         try:
-            requests.post("http://localhost:5000/shutdown", timeout=2)
-            print("🛑 Servidor backend parado")
-        except:
-            print("⚠️ Servidor backend não respondeu ao shutdown")
+            print("🔴 Parando servidor backend...")
+            self.running = False
+            
+            # Tenta parar graciosamente primeiro
+            try:
+                requests.post("http://localhost:5000/shutdown", timeout=1)
+                print("✅ Servidor backend parado graciosamente")
+            except:
+                # Se não conseguir parar graciosamente, força o encerramento
+                print("⚠️ Forçando encerramento do servidor backend")
+                
+        except Exception as e:
+            print(f"⚠️ Erro ao parar servidor: {e}")
         
         self.running = False
 
@@ -369,22 +395,29 @@ class DesktopApp:
     def process_messages(self):
         """Processa mensagens da queue de comunicação"""
         try:
-            while not self.message_queue.empty():
-                message = self.message_queue.get_nowait()
-                
-                if message == "OPEN_GUI":
-                    if not self.gui_visible:
-                        print("🎨 Abrindo interface pela solicitação do tray...")
-                        self.create_gui()
-                    else:
-                        print("Interface já está visível")
-                        
-                elif message == "QUIT_APP":
-                    print("🔴 Processando solicitação de encerramento...")
-                    self.quit_application()
+            # Processa até 10 mensagens por vez para evitar loop infinito
+            for _ in range(10):
+                try:
+                    message = self.message_queue.get_nowait()
                     
-        except queue.Empty:
-            pass
+                    if message == "OPEN_GUI":
+                        if not self.gui_visible:
+                            print("🎨 Abrindo interface pela solicitação do tray...")
+                            try:
+                                self.create_gui()
+                            except Exception as e:
+                                print(f"❌ Erro ao abrir GUI: {e}")
+                        else:
+                            print("Interface já está visível")
+                            
+                    elif message == "QUIT_APP":
+                        print("🔴 Processando solicitação de encerramento...")
+                        self.quit_application()
+                        return  # Sai imediatamente após quit
+                        
+                except queue.Empty:
+                    break  # Não há mais mensagens
+                    
         except Exception as e:
             print(f"Erro ao processar mensagens: {e}")
     
@@ -395,18 +428,28 @@ class DesktopApp:
         # Marca para encerrar
         self.should_quit = True
         
-        # Para o backend
-        self.stop_backend()
-        
-        # Para o tray
-        if self.tray_app and self.tray_app.tray_icon:
-            try:
-                self.tray_app.tray_icon.stop()
-            except:
-                pass
-        
-        # Força o encerramento
-        os._exit(0)
+        try:
+            # Para o tray primeiro
+            if self.tray_app and self.tray_app.tray_icon:
+                try:
+                    print("🔴 Parando ícone da bandeja...")
+                    self.tray_app.tray_icon.stop()
+                except Exception as e:
+                    print(f"⚠️ Erro ao parar tray: {e}")
+            
+            # Para o backend
+            print("🔴 Parando backend...")
+            self.stop_backend()
+            
+            # Pequeno delay para permitir cleanup
+            time.sleep(0.5)
+            
+        except Exception as e:
+            print(f"⚠️ Erro durante encerramento: {e}")
+        finally:
+            # Força o encerramento
+            print("🔴 Encerramento forçado")
+            os._exit(0)
 
 
 class TrayApp:
@@ -509,11 +552,20 @@ class TrayApp:
         """Solicita encerramento do aplicativo via message queue"""
         try:
             print("🔴 Solicitando encerramento do aplicativo...")
-            self.desktop_app.message_queue.put("QUIT_APP")
             self.desktop_app.should_quit = True
+            
+            # Tenta enviar mensagem pela queue primeiro
+            try:
+                self.desktop_app.message_queue.put_nowait("QUIT_APP")
+            except:
+                # Se a queue falhar, chama diretamente
+                self.desktop_app.quit_application()
+                
         except Exception as e:
             print(f"Erro ao solicitar encerramento: {e}")
-            os._exit(1)
+            # Força encerramento em caso de erro
+            time.sleep(0.2)
+            os._exit(0)
 
 
 def main_gui(page: ft.Page, desktop_app):
@@ -1421,15 +1473,27 @@ def main():
     # Loop principal que mantém o aplicativo vivo e processa mensagens
     try:
         while desktop_app.tray_app and desktop_app.tray_app.tray_icon and not desktop_app.should_quit:
-            # Processa mensagens da queue
-            desktop_app.process_messages()
-            
-            # Pequena pausa para não consumir muito CPU
-            time.sleep(0.1)
-            
+            try:
+                # Processa mensagens da queue
+                desktop_app.process_messages()
+                
+                # Pequena pausa para não consumir muito CPU
+                time.sleep(0.1)
+            except Exception as e:
+                print(f"⚠️ Erro no loop principal: {e}")
+                time.sleep(1)  # Pausa maior em caso de erro
+                
     except KeyboardInterrupt:
         print("🔴 Interrompido pelo usuário (Ctrl+C)")
-        desktop_app.quit_application()
+    except Exception as e:
+        print(f"❌ Erro crítico no loop principal: {e}")
+    finally:
+        # Garante que o aplicativo seja encerrado
+        try:
+            desktop_app.quit_application()
+        except:
+            print("🔴 Encerramento de emergência")
+            os._exit(0)
     
     print("🏁 Loop principal encerrado")
 
