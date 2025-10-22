@@ -144,14 +144,29 @@ class ImageGenerator:
 
 class PrintingBackend:
     """Classe responsável pelo backend de impressão"""
-    def __init__(self):
+    def __init__(self, log_queue=None):
         self.app = None
         self.running = False
         self.thread = None
+        self.log_queue = log_queue  # Fila para enviar logs para a UI
         
     def create_flask_app(self):
         """Cria a aplicação Flask"""
         app = Flask("printing_app")
+        
+        # Função auxiliar para enviar logs para a UI
+        def send_log(message, level="INFO", simple_message=None, simple_status="info"):
+            """Envia log para a UI através da fila"""
+            if self.log_queue:
+                self.log_queue.put({
+                    "type": "log",
+                    "message": message,
+                    "level": level,
+                    "simple_message": simple_message,
+                    "simple_status": simple_status
+                })
+            # Também imprime no console
+            print(f"[{level}] {message}")
         
         @app.route('/imprimir')
         def imprimir():
@@ -163,7 +178,12 @@ class PrintingBackend:
                 header = flask_request.args.get('header', '')
                 footer = flask_request.args.get('footer', '')
                 
-                print(f"📩 Nova impressão recebida - Código: {code}")
+                send_log(
+                    f"Nova impressão recebida - Código: {code}", 
+                    "INFO",
+                    "📩 Nova solicitação de impressão recebida",
+                    "info"
+                )
 
                 # Gera imagem do ticket
                 image_generator = ImageGenerator(IMAGE_SIZE=(300, 300))
@@ -175,17 +195,32 @@ class PrintingBackend:
                     footer=footer
                 )
                 
-                print(f"🖼️ Ticket gerado: {code}")
+                send_log(
+                    f"Ticket gerado: {code}",
+                    "INFO",
+                    "🖼️ Ticket de senha gerado",
+                    "info"
+                )
 
                 # Carrega configuração da impressora
                 config = load_config()
                 impressora = config.get("selected_printer")
                 
-                print(f"🔍 Configuração carregada no Flask: {config}")
-                print(f"🖨️ Impressora selecionada: '{impressora}'")
+                send_log(f"Configuração carregada no Flask: {config}", "INFO")
+                send_log(
+                    f"Impressora selecionada: '{impressora}'",
+                    "INFO",
+                    f"🖨️ Impressora: {impressora}",
+                    "info"
+                )
                 
                 if not impressora or impressora == "null" or (isinstance(impressora, str) and impressora.strip() == ""):
-                    print(f"❌ Nenhuma impressora configurada! Valor: {repr(impressora)}")
+                    send_log(
+                        f"Nenhuma impressora configurada! Valor: {repr(impressora)}",
+                        "ERROR",
+                        "❌ Impressora não configurada",
+                        "error"
+                    )
                     return "Erro: Configure uma impressora nas Configurações", 500
                 
                 # Prepara comando de impressão
@@ -205,15 +240,30 @@ class PrintingBackend:
                         startupinfo=startupinfo if os.name == 'nt' else None
                     )
                     
-                    print(f"✅ Impressão enviada com sucesso - {code}")
+                    send_log(
+                        f"Impressão enviada com sucesso - {code}",
+                        "INFO",
+                        "✅ Senha impressa com sucesso",
+                        "success"
+                    )
                     return "Impressão realizada com sucesso", 200
                     
                 except Exception as e:
-                    print(f"Erro ao enviar para impressão: {e}")
+                    send_log(
+                        f"Erro ao enviar para impressão: {e}",
+                        "ERROR",
+                        "❌ Falha ao imprimir",
+                        "error"
+                    )
                     return f"Erro ao imprimir: {e}", 500
 
             except Exception as e:
-                print(f"Erro geral no endpoint /imprimir: {e}")
+                send_log(
+                    f"Erro geral no endpoint /imprimir: {e}",
+                    "ERROR",
+                    "⚠️ Erro interno",
+                    "error"
+                )
                 return f"Erro ao imprimir: {e}", 500
 
         @app.route('/imprimir/qrcode')
@@ -227,7 +277,12 @@ class PrintingBackend:
                 footer = flask_request.args.get('footer', '')
                 qrcode_val = flask_request.args.get('qrcode', '')
                 
-                print(f"📩 Nova impressão com QR recebida - Código: {code}")
+                send_log(
+                    f"Nova impressão com QR recebida - Código: {code}",
+                    "INFO",
+                    "📩 Nova solicitação de impressão (QR Code)",
+                    "info"
+                )
 
                 # Gera imagem com QR Code
                 image_generator = ImageGenerator(IMAGE_SIZE=(300, 300))
@@ -241,17 +296,32 @@ class PrintingBackend:
                 image_generator.create_qrcode(qrcode_val)
                 image_path = image_generator.combine()
                 
-                print(f"🖼️ Ticket com QR gerado: {code}")
+                send_log(
+                    f"Ticket com QR gerado: {code}",
+                    "INFO",
+                    "🖼️ Ticket com QR Code gerado",
+                    "info"
+                )
 
                 # Carrega configuração da impressora
                 config = load_config()
                 impressora = config.get("selected_printer")
                 
-                print(f"🔍 Configuração carregada no Flask QR: {config}")
-                print(f"🖨️ Impressora selecionada QR: '{impressora}'")
+                send_log(f"Configuração carregada no Flask QR: {config}", "INFO")
+                send_log(
+                    f"Impressora selecionada QR: '{impressora}'",
+                    "INFO",
+                    f"🖨️ Impressora: {impressora}",
+                    "info"
+                )
                 
                 if not impressora or impressora == "null" or (isinstance(impressora, str) and impressora.strip() == ""):
-                    print(f"❌ Nenhuma impressora configurada! Valor QR: {repr(impressora)}")
+                    send_log(
+                        f"Nenhuma impressora configurada! Valor QR: {repr(impressora)}",
+                        "ERROR",
+                        "❌ Impressora não configurada",
+                        "error"
+                    )
                     return "Erro: Configure uma impressora nas Configurações", 500
                 
                 # Prepara comando de impressão
@@ -271,15 +341,30 @@ class PrintingBackend:
                         startupinfo=startupinfo if os.name == 'nt' else None
                     )
                     
-                    print(f"✅ Impressão QR enviada com sucesso - {code}")
+                    send_log(
+                        f"Impressão QR enviada com sucesso - {code}",
+                        "INFO",
+                        "✅ Senha com QR Code impressa",
+                        "success"
+                    )
                     return "Impressão com QRCode realizada com sucesso", 200
                     
                 except Exception as e:
-                    print(f"Erro ao enviar para impressão QR: {e}")
+                    send_log(
+                        f"Erro ao enviar para impressão QR: {e}",
+                        "ERROR",
+                        "❌ Falha ao imprimir QR Code",
+                        "error"
+                    )
                     return f"Erro ao imprimir QR: {e}", 500
 
             except Exception as e:
-                print(f"Erro geral no endpoint /imprimir/qrcode: {e}")
+                send_log(
+                    f"Erro geral no endpoint /imprimir/qrcode: {e}",
+                    "ERROR",
+                    "⚠️ Erro interno (QR Code)",
+                    "error"
+                )
                 return f"Erro ao imprimir QR: {e}", 500
 
         @app.route('/status')
@@ -356,11 +441,11 @@ class PrintingBackend:
 class DesktopApp:
     """Classe principal que gerencia o aplicativo desktop"""
     def __init__(self):
-        self.backend = PrintingBackend()
+        self.message_queue = queue.Queue()
+        self.backend = PrintingBackend(log_queue=self.message_queue)
         self.tray_app = None
         self.flet_process = None
         self.gui_visible = False
-        self.message_queue = queue.Queue()
         self.should_quit = False
         
     def start_backend(self):
@@ -736,49 +821,169 @@ def main_gui(page: ft.Page, desktop_app):
         # Fallback: erros genéricos
         if level == "ERROR" or "traceback" in l:
             append_simple_log("⚠️ Erro no sistema", "error")
+    
+    # Função para processar logs vindos do Flask (através da fila)
+    def process_log_queue(e):
+        """Processa logs da fila de mensagens do Flask"""
+        try:
+            while not desktop_app.message_queue.empty():
+                log_msg = desktop_app.message_queue.get_nowait()
+                
+                if log_msg.get("type") == "log":
+                    # Adiciona ao log avançado
+                    append_advanced_log(log_msg["message"], log_msg["level"])
+                    
+                    # Se tem mensagem simples, adiciona ao log simples
+                    if log_msg.get("simple_message"):
+                        append_simple_log(log_msg["simple_message"], log_msg.get("simple_status", "info"))
+        except queue.Empty:
+            pass
+        except Exception as error:
+            print(f"Erro ao processar fila de logs: {error}")
+    
+    # Timer para processar logs da fila a cada 500ms
+    log_timer = ft.Ref[ft.Container]()
+    def start_log_timer():
+        import asyncio
+        async def timer_loop():
+            while True:
+                process_log_queue(None)
+                await asyncio.sleep(0.5)
+        
+        # Inicia o loop em uma task
+        page.run_task(timer_loop)
 
     # ========== FUNÇÕES DE CONFIGURAÇÃO ==========
     
+    # Cache de impressoras para melhorar performance
+    printers_cache = {"list": None, "timestamp": 0}
+    CACHE_DURATION = 30  # Cache válido por 30 segundos
+    
+    def test_print_config(printer_name):
+        """Testa a impressora fazendo uma impressão real de teste"""
+        try:
+            from datetime import datetime
+            from PIL import Image, ImageDraw, ImageFont
+            
+            # Cria uma imagem pequena de teste
+            img = Image.new("RGB", (280, 150), color=(255, 255, 255))
+            draw = ImageDraw.Draw(img)
+            
+            try:
+                font_title = ImageFont.truetype("arial.ttf", size=16)
+                font_text = ImageFont.truetype("arial.ttf", size=12)
+            except:
+                font_title = ImageFont.load_default()
+                font_text = ImageFont.load_default()
+            
+            # Desenha o texto de teste
+            draw.text((10, 10), "TESTE DE CONFIGURACAO", font=font_title, fill=(0, 0, 0))
+            draw.text((10, 40), f"Impressora: {printer_name}", font=font_text, fill=(0, 0, 0))
+            draw.text((10, 60), f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M')}", font=font_text, fill=(0, 0, 0))
+            draw.text((10, 80), "Status: Configurada com sucesso!", font=font_text, fill=(0, 128, 0))
+            draw.line([(10, 100), (270, 100)], fill=(0, 0, 0), width=1)
+            draw.text((10, 110), "Sistema de Impressao de Senhas", font=font_text, fill=(100, 100, 100))
+            
+            # Salva a imagem temporária
+            test_image_path = os.path.join('ticket', 'test_config.png')
+            if not os.path.exists('ticket'):
+                os.makedirs('ticket')
+            img.save(test_image_path)
+            
+            # Configurações para ocultar janela do console
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+            
+            # Tenta imprimir
+            command = ['mspaint', '/pt', test_image_path, printer_name]
+            result = subprocess.run(
+                command,
+                startupinfo=startupinfo,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
+                timeout=10,
+                capture_output=True
+            )
+            
+            # Aguarda um pouco para o comando processar
+            import time
+            time.sleep(1)
+            
+            # Remove o arquivo temporário
+            try:
+                if os.path.exists(test_image_path):
+                    os.remove(test_image_path)
+            except:
+                pass
+            
+            if result.returncode == 0:
+                append_log(f"✅ Teste de impressão enviado para '{printer_name}'", "INFO")
+                return True
+            else:
+                append_log(f"❌ Falha no teste de impressão: {result.stderr.decode() if result.stderr else 'Erro desconhecido'}", "ERROR")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            append_log(f"⚠️ Timeout ao enviar teste de impressão", "WARNING")
+            return False
+        except Exception as e:
+            append_log(f"❌ Erro ao testar impressão: {e}", "ERROR")
+            return False
+    
     def load_available_printers():
-        """Carrega lista de impressoras disponíveis"""
+        """Carrega lista de impressoras disponíveis de forma otimizada"""
+        # Verifica se tem cache válido
+        current_time = time.time()
+        if (printers_cache["list"] is not None and 
+            current_time - printers_cache["timestamp"] < CACHE_DURATION):
+            print("✅ Usando cache de impressoras")
+            return printers_cache["list"]
+        
+        print("🔄 Carregando impressoras do sistema...")
         try:
             # Configurações para ocultar janela do console
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = subprocess.SW_HIDE
             
+            # Comando PowerShell otimizado com timeout reduzido
             result = subprocess.run([
-                "powershell", "-Command", 
+                "powershell", "-NoProfile", "-NonInteractive", "-Command", 
                 "Get-Printer | Select-Object -ExpandProperty Name"
-            ], capture_output=True, text=True, timeout=10,
+            ], capture_output=True, text=True, timeout=5,
             startupinfo=startupinfo,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
             
             if result.returncode == 0:
                 printers = [p.strip() for p in result.stdout.splitlines() if p.strip()]
+                # Atualiza cache
+                printers_cache["list"] = printers
+                printers_cache["timestamp"] = time.time()
+                print(f"✅ {len(printers)} impressora(s) carregada(s)")
                 return printers
+            
+            printers_cache["list"] = []
+            printers_cache["timestamp"] = time.time()
             return []
-        except:
+        except subprocess.TimeoutExpired:
+            print("⚠️ Timeout ao carregar impressoras")
+            printers_cache["list"] = []
+            printers_cache["timestamp"] = time.time()
+            return []
+        except Exception as e:
+            print(f"⚠️ Erro ao carregar impressoras: {e}")
+            printers_cache["list"] = []
+            printers_cache["timestamp"] = time.time()
             return []
     
     def open_settings(e):
         """Abre diálogo de configurações"""
-        printers = load_available_printers()
-        
-        if not printers:
-            printer_dropdown.current.options = [
-                ft.dropdown.Option("Nenhuma impressora encontrada")
-            ]
-            printer_dropdown.current.disabled = True
-        else:
-            printer_dropdown.current.options = [
-                ft.dropdown.Option(p) for p in printers
-            ]
-            printer_dropdown.current.disabled = False
-            
-            # Seleciona a impressora atual se existir
-            if selected_printer["name"] in printers:
-                printer_dropdown.current.value = selected_printer["name"]
+        # Mostra diálogo imediatamente com estado de carregamento
+        printer_dropdown.current.options = [
+            ft.dropdown.Option("🔄 Carregando impressoras...")
+        ]
+        printer_dropdown.current.value = "🔄 Carregando impressoras..."
+        printer_dropdown.current.disabled = True
         
         # Atualiza status
         if selected_printer["name"]:
@@ -788,8 +993,45 @@ def main_gui(page: ft.Page, desktop_app):
             printer_status_text.current.value = "⚠ Nenhuma impressora configurada"
             printer_status_text.current.color = ft.Colors.ORANGE_700
         
+        # Abre o diálogo imediatamente
         settings_dialog.current.open = True
         page.update()
+        
+        # Carrega impressoras em thread separada
+        def load_printers_async():
+            printers = load_available_printers()
+            
+            # Função para atualizar UI na thread principal
+            def update_ui():
+                if not printers:
+                    printer_dropdown.current.options = [
+                        ft.dropdown.Option("Nenhuma impressora encontrada")
+                    ]
+                    printer_dropdown.current.value = "Nenhuma impressora encontrada"
+                    printer_dropdown.current.disabled = True
+                else:
+                    printer_dropdown.current.options = [
+                        ft.dropdown.Option(p) for p in printers
+                    ]
+                    printer_dropdown.current.disabled = False
+                    
+                    # Seleciona a impressora atual se existir
+                    if selected_printer["name"] in printers:
+                        printer_dropdown.current.value = selected_printer["name"]
+                    else:
+                        printer_dropdown.current.value = None
+                
+                page.update()
+            
+            # Atualiza UI na thread principal usando page.run_task
+            try:
+                page.run_task(update_ui)
+            except:
+                # Fallback: atualiza diretamente (funciona em algumas versões do Flet)
+                update_ui()
+        
+        # Executa carregamento em thread separada
+        threading.Thread(target=load_printers_async, daemon=True).start()
     
     def save_printer_config(e):
         """Salva configuração da impressora"""
@@ -799,55 +1041,101 @@ def main_gui(page: ft.Page, desktop_app):
             page.update()
             return
         
-        # Verifica se a impressora está disponível
         printer_name = printer_dropdown.current.value
-        if not verificar_impressora_online(printer_name):
-            # Mensagem compacta no status
-            printer_status_text.current.value = (
-                "⚠️ Impressora não disponível\n\n"
-                "Verifique:\n"
-                "1. Se a impressora está conectada corretamente\n"
-                "   na sua máquina (cabo USB/Rede)\n"
-                "2. Se a impressora está ligada\n"
-                "3. Se os drivers estão instalados corretamente\n"
-                "4. Nas configurações do Windows:\n"
-                "   Dispositivos > Impressoras e scanners"
-            )
-            printer_status_text.current.color = ft.Colors.ORANGE_700
-            append_simple_log(f"⚠️ Impressora '{printer_name}' não disponível", "warning")
-            append_log(f"Impressora '{printer_name}' não encontrada ou está offline", "WARNING")
-            append_log("╔═══════════════════════════════════════════════════╗", "WARNING")
-            append_log("║  Verifique:                                       ║", "WARNING")
-            append_log("║  1. Se a impressora está conectada corretamente  ║", "WARNING")
-            append_log("║     na sua máquina (cabo USB/Rede)               ║", "WARNING")
-            append_log("║  2. Se a impressora está ligada                  ║", "WARNING")
-            append_log("║  3. Se os drivers estão instalados corretamente ║", "WARNING")
-            append_log("║  4. Nas configurações do Windows:                ║", "WARNING")
-            append_log("║     Dispositivos > Impressoras e scanners        ║", "WARNING")
-            append_log("╚═══════════════════════════════════════════════════╝", "WARNING")
-            page.update()
-            return
         
-        # Salva localmente
-        selected_printer["name"] = printer_name
+        # Mostra loading
+        printer_status_text.current.value = "🔄 Verificando impressora..."
+        printer_status_text.current.color = ft.Colors.BLUE_700
+        printer_dropdown.current.disabled = True
+        page.update()
         
-        # Salva no arquivo
-        config = load_config()
-        config["selected_printer"] = selected_printer["name"]
-        
-        if save_config(config):
-            append_simple_log(f"🖨️ Impressora configurada: {selected_printer['name']}", "success")
-            append_log(f"Impressora '{selected_printer['name']}' salva com sucesso", "INFO")
+        # Executa verificação e salvamento em thread separada
+        def save_async():
+            # Mostra mensagem de teste
+            def update_testing_message():
+                printer_status_text.current.value = "🖨️ Enviando impressão de teste..."
+                printer_status_text.current.color = ft.Colors.BLUE_700
+                page.update()
             
-            # Cache de impressora será limpo automaticamente no backend
+            try:
+                page.run_task(update_testing_message)
+            except:
+                update_testing_message()
             
-            # Fecha o diálogo automaticamente
-            settings_dialog.current.open = False
-            page.update()
-        else:
-            printer_status_text.current.value = "❌ Erro ao salvar configuração"
-            printer_status_text.current.color = ft.Colors.RED_700
-            page.update()
+            # Testa a impressão real
+            test_result = test_print_config(printer_name)
+            
+            def update_result():
+                # Reabilita dropdown
+                printer_dropdown.current.disabled = False
+                
+                if not test_result:
+                    # Mensagem de erro no teste
+                    printer_status_text.current.value = (
+                        "❌ Falha no teste de impressão!\n\n"
+                        "A impressora pode estar:\n"
+                        "1. Desligada (sem energia)\n"
+                        "2. Desconectada do cabo USB/Rede\n"
+                        "3. Com a tampa aberta\n"
+                        "4. Sem papel\n"
+                        "5. Com erro de driver\n\n"
+                        "Verifique a impressora e tente novamente."
+                    )
+                    printer_status_text.current.color = ft.Colors.RED_700
+                    append_simple_log(f"❌ Teste de impressão falhou em '{printer_name}'", "error")
+                    append_log(f"Impressora '{printer_name}' não respondeu ao teste de impressão", "ERROR")
+                    append_log("╔═══════════════════════════════════════════════════╗", "ERROR")
+                    append_log("║  A impressora pode estar:                        ║", "ERROR")
+                    append_log("║  1. Desligada (sem energia)                      ║", "ERROR")
+                    append_log("║  2. Desconectada do cabo USB/Rede                ║", "ERROR")
+                    append_log("║  3. Com a tampa aberta                           ║", "ERROR")
+                    append_log("║  4. Sem papel                                    ║", "ERROR")
+                    append_log("║  5. Com erro de driver                           ║", "ERROR")
+                    append_log("╚═══════════════════════════════════════════════════╝", "ERROR")
+                    page.update()
+                    return
+                
+                # Salva localmente
+                selected_printer["name"] = printer_name
+                
+                # Salva no arquivo
+                config = load_config()
+                config["selected_printer"] = selected_printer["name"]
+                
+                if save_config(config):
+                    # Mensagem de sucesso
+                    printer_status_text.current.value = (
+                        f"✅ Impressora '{printer_name}' configurada!\n\n"
+                        "✅ Teste de impressão enviado com sucesso!\n"
+                        "Verifique se o ticket de teste foi impresso."
+                    )
+                    printer_status_text.current.color = ft.Colors.GREEN_700
+                    
+                    append_simple_log(f"🖨️ Impressora configurada: {selected_printer['name']}", "success")
+                    append_log(f"Impressora '{selected_printer['name']}' configurada e testada com sucesso", "INFO")
+                    
+                    # Cache de impressora será limpo automaticamente no backend
+                    
+                    # Aguarda 2 segundos para mostrar a mensagem antes de fechar
+                    import time
+                    time.sleep(2)
+                    
+                    # Fecha o diálogo automaticamente
+                    settings_dialog.current.open = False
+                    page.update()
+                else:
+                    printer_status_text.current.value = "❌ Erro ao salvar configuração"
+                    printer_status_text.current.color = ft.Colors.RED_700
+                    page.update()
+            
+            # Atualiza UI na thread principal
+            try:
+                page.run_task(update_result)
+            except:
+                update_result()
+        
+        # Executa salvamento em thread separada
+        threading.Thread(target=save_async, daemon=True).start()
     
     def close_settings(e):
         """Fecha diálogo de configurações"""
@@ -992,29 +1280,60 @@ def main_gui(page: ft.Page, desktop_app):
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = subprocess.SW_HIDE
             
-            # Agora verifica o STATUS da impressora (se está online/offline)
+            # Verifica múltiplos aspectos da impressora usando PowerShell
             result = subprocess.run([
-                "powershell", "-Command",
-                f"Get-Printer -Name '{impressora_encontrada}' | Select-Object -ExpandProperty PrinterStatus"
-            ], capture_output=True, text=True, timeout=5,
+                "powershell", "-NoProfile", "-NonInteractive", "-Command",
+                f"$p = Get-Printer -Name '{impressora_encontrada}'; "
+                f"Write-Output \"Status:$($p.PrinterStatus)\"; "
+                f"Write-Output \"JobCount:$($p.JobCount)\"; "
+                f"$jobs = Get-PrintJob -PrinterName '{impressora_encontrada}' -ErrorAction SilentlyContinue; "
+                f"if ($jobs) {{ $errorJobs = ($jobs | Where-Object {{ $_.JobStatus -like '*Error*' -or $_.JobStatus -like '*Offline*' }}); "
+                f"Write-Output \"ErrorJobs:$($errorJobs.Count)\" }} else {{ Write-Output 'ErrorJobs:0' }}"
+            ], capture_output=True, text=True, timeout=8,
             startupinfo=startupinfo,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
             
             if result.returncode == 0:
-                status = result.stdout.strip().lower()
-                append_log(f"Status da impressora '{impressora}': {status}", "INFO")
+                output = result.stdout.strip().lower()
+                append_log(f"Verificação detalhada da impressora '{impressora}': {output}", "INFO")
                 
-                # Verifica se o status indica que está offline/erro
-                if "offline" in status or "error" in status or "paused" in status:
-                    append_log(f"Impressora '{impressora}' está {status} (desconectada ou com erro)", "WARNING")
+                # Verifica se há erros explícitos
+                if "offline" in output or "error" in output or "paused" in output:
+                    append_log(f"Impressora '{impressora}' reportou erro ou está offline", "WARNING")
                     return False
                 
-                append_log(f"Impressora '{impressora}' detectada e online", "INFO")
+                # Verifica se há trabalhos com erro
+                if "errorjobs:" in output:
+                    try:
+                        error_count = int(output.split("errorjobs:")[1].split()[0])
+                        if error_count > 0:
+                            append_log(f"Impressora '{impressora}' tem {error_count} trabalho(s) com erro na fila", "WARNING")
+                            # Não bloqueia por trabalhos com erro, mas avisa
+                    except:
+                        pass
+                
+                append_log(f"Impressora '{impressora}' passou na verificação", "INFO")
                 return True
             else:
-                # Se não conseguiu obter status, assume que está online (para não bloquear)
-                append_log(f"Não foi possível verificar status da impressora '{impressora}'", "WARNING")
-                append_log(f"Impressora detectada no sistema", "INFO")
+                # Se não conseguiu obter informações detalhadas, faz verificação básica
+                append_log(f"Verificação detalhada falhou, tentando verificação básica...", "WARNING")
+                result_basic = subprocess.run([
+                    "powershell", "-NoProfile", "-Command",
+                    f"Get-Printer -Name '{impressora_encontrada}' | Select-Object -ExpandProperty PrinterStatus"
+                ], capture_output=True, text=True, timeout=5,
+                startupinfo=startupinfo,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+                
+                if result_basic.returncode == 0:
+                    status = result_basic.stdout.strip().lower()
+                    append_log(f"Status básico da impressora '{impressora}': {status}", "INFO")
+                    
+                    if "offline" in status or "error" in status or "paused" in status:
+                        append_log(f"Impressora '{impressora}' está {status}", "WARNING")
+                        return False
+                
+                # Se chegou aqui, assume que está disponível
+                append_log(f"Impressora '{impressora}' detectada no sistema", "INFO")
                 return True
             
         except Exception as e:
@@ -1418,6 +1737,9 @@ def main_gui(page: ft.Page, desktop_app):
         # Se chegou aqui, o servidor não respondeu após todas as tentativas
         append_simple_log("❌ Servidor não respondeu após múltiplas tentativas", "error")
         return False
+    
+    # Inicia o timer para processar logs do Flask
+    start_log_timer()
     
     # Executa verificação inicial e depois monitora
     if not check_initial_status():
