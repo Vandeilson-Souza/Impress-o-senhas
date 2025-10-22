@@ -461,17 +461,24 @@ class TrayApp:
     def create_tray_icon(self):
         """Cria o ícone da bandeja do sistema"""
         try:
-            # Tenta usar ícone personalizado se existe
-            if os.path.exists("assets/icon.ico"):
+            # Usa o logo PNG para o ícone da bandeja
+            if os.path.exists("assets/logo.png"):
                 try:
-                    image = Image.open("assets/icon.ico")
-                except:
+                    image = Image.open("assets/logo.png")
+                    # Converte para RGB se necessário e redimensiona para 64x64
+                    if image.mode != 'RGB':
+                        image = image.convert('RGB')
+                    image = image.resize((64, 64), Image.Resampling.LANCZOS)
+                    print("✅ Ícone da bandeja carregado de assets/logo.png")
+                except Exception as png_error:
+                    print(f"⚠️ Erro ao carregar assets/logo.png: {png_error}")
                     # Fallback para imagem simples
                     image = Image.new('RGB', (64, 64), color='blue')
                     from PIL import ImageDraw
                     draw = ImageDraw.Draw(image)
                     draw.rectangle([16, 16, 48, 48], fill='white')
             else:
+                print("⚠️ Arquivo assets/logo.png não encontrado, usando ícone padrão")
                 # Cria uma imagem simples para o ícone
                 image = Image.new('RGB', (64, 64), color='blue')
                 from PIL import ImageDraw
@@ -575,6 +582,13 @@ def main_gui(page: ft.Page, desktop_app):
     page.window_width = 980
     page.window_height = 720
     page.theme_mode = ft.ThemeMode.LIGHT
+    
+    # Configuração do ícone da janela (aparece na barra de tarefas)
+    if os.path.exists("assets/logo.png"):
+        page.window_icon = "assets/logo.png"
+        print("✅ Ícone da janela configurado: assets/logo.png")
+    else:
+        print("⚠️ Arquivo assets/logo.png não encontrado para ícone da janela")
     
     # Configuração para comportamento igual ao Spotify
     page.window_minimizable = True
@@ -1205,7 +1219,7 @@ def main_gui(page: ft.Page, desktop_app):
     # Logo e título
     logo_and_title = ft.Row(
         [
-            # Logo (se existir o arquivo)
+            # Logo usando o arquivo PNG
             ft.Image(
                 src="assets/logo.png",
                 width=40,
@@ -1236,24 +1250,12 @@ def main_gui(page: ft.Page, desktop_app):
             status_badge,
             ft.Container(expand=True),
             ft.IconButton(
-                icon=ft.Icons.MINIMIZE,
-                tooltip="Minimizar para Bandeja",
-                on_click=minimize_to_tray,
-                icon_color=ft.Colors.BLUE_700,
-            ),
-            ft.IconButton(
                 icon=ft.Icons.SETTINGS,
                 tooltip="Configurações",
                 on_click=open_settings,
                 icon_color=ft.Colors.BLUE_700,
             ),
             ft.FilledTonalButton("Testar Status", icon=ft.Icons.SEARCH, on_click=handle_test_status),
-            ft.IconButton(
-                icon=ft.Icons.REFRESH,
-                tooltip="Atualizar Status do Servidor",
-                on_click=lambda e: threading.Thread(target=monitor_server_status, daemon=True).start(),
-                icon_color=ft.Colors.GREEN_700,
-            ),
             ft.FilledTonalButton("Testar Impressão", icon=ft.Icons.PRINT, on_click=handle_test_print),
             ft.FilledTonalButton("Testar QRCode", icon=ft.Icons.QR_CODE_2, on_click=handle_test_qr),
             ft.FilledButton(
