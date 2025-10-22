@@ -8,7 +8,7 @@ import time
 import requests
 import json
 from flask import Flask, request as flask_request
-from waitress import serve as waitress_serve
+# from waitress import serve as waitress_serve
 
 
 # Arquivo de configurações
@@ -737,7 +737,7 @@ def main(page: ft.Page):
                 append_log("Diretório 'ticket' criado", "INFO")
                 
             append_log("Servidor Flask iniciado em http://127.0.0.1:5000", "INFO")
-            waitress_serve(printing_app, host='127.0.0.1', port=5000, threads=4)
+            printing_app.run(host='127.0.0.1', port=5000, debug=False, threaded=True)
             
         except Exception as e:
             append_log(f"Erro no servidor de impressão: {e}", "ERROR")
