@@ -8,11 +8,20 @@ import time
 import requests
 import json
 from flask import Flask, request as flask_request
-# from waitress import serve as waitress_serve
-
+import pystray
+from PIL import Image
+import webbrowser
+import atexit
+import logging
+import queue
 
 # Arquivo de configurações
 CONFIG_FILE = "printer_config.json"
+
+# Variáveis globais para comunicação entre threads
+app_instance = None
+server_running = False
+backend_thread = None
 
 def load_config():
     """Carrega configurações salvas"""
@@ -124,7 +133,390 @@ class ImageGenerator:
         return self.image_path
 
 
-def main(page: ft.Page):
+class PrintingBackend:
+    """Classe responsável pelo backend de impressão"""
+    def __init__(self):
+        self.app = None
+        self.running = False
+        self.thread = None
+        
+    def create_flask_app(self):
+        """Cria a aplicação Flask"""
+        app = Flask("printing_app")
+        
+        @app.route('/imprimir')
+        def imprimir():
+            try:
+                # Coleta parâmetros
+                created_date = flask_request.args.get('created_date', '')
+                code = flask_request.args.get('code', '')
+                services = flask_request.args.get('services', '')
+                header = flask_request.args.get('header', '')
+                footer = flask_request.args.get('footer', '')
+                
+                print(f"📩 Nova impressão recebida - Código: {code}")
+
+                # Gera imagem do ticket
+                image_generator = ImageGenerator(IMAGE_SIZE=(300, 300))
+                image_path = image_generator.create_image(
+                    created_date=created_date, 
+                    code=code, 
+                    services=services, 
+                    header=header, 
+                    footer=footer
+                )
+                
+                print(f"🖼️ Ticket gerado: {code}")
+
+                # Carrega configuração da impressora
+                config = load_config()
+                impressora = config.get("selected_printer")
+                
+                if not impressora:
+                    print(f"❌ Nenhuma impressora configurada!")
+                    return "Erro: Configure uma impressora nas Configurações", 500
+                
+                # Prepara comando de impressão
+                command = ['mspaint', '/pt', image_path, impressora]
+                
+                # Inicia processo assíncrono
+                try:
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    startupinfo.wShowWindow = subprocess.SW_HIDE
+                    
+                    subprocess.Popen(
+                        command, 
+                        stdout=subprocess.DEVNULL, 
+                        stderr=subprocess.DEVNULL,
+                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
+                        startupinfo=startupinfo if os.name == 'nt' else None
+                    )
+                    
+                    print(f"✅ Impressão enviada com sucesso - {code}")
+                    return "Impressão realizada com sucesso", 200
+                    
+                except Exception as e:
+                    print(f"Erro ao enviar para impressão: {e}")
+                    return f"Erro ao imprimir: {e}", 500
+
+            except Exception as e:
+                print(f"Erro geral no endpoint /imprimir: {e}")
+                return f"Erro ao imprimir: {e}", 500
+
+        @app.route('/imprimir/qrcode')
+        def imprimir_qrcode():
+            try:
+                # Coleta parâmetros
+                created_date = flask_request.args.get('created_date', '')
+                code = flask_request.args.get('code', '')
+                services = flask_request.args.get('services', '')
+                header = flask_request.args.get('header', '')
+                footer = flask_request.args.get('footer', '')
+                qrcode_val = flask_request.args.get('qrcode', '')
+                
+                print(f"📩 Nova impressão com QR recebida - Código: {code}")
+
+                # Gera imagem com QR Code
+                image_generator = ImageGenerator(IMAGE_SIZE=(300, 300))
+                image_generator.create_image(
+                    created_date=created_date, 
+                    code=code, 
+                    services=services, 
+                    header=header, 
+                    footer=footer
+                )
+                image_generator.create_qrcode(qrcode_val)
+                image_path = image_generator.combine()
+                
+                print(f"🖼️ Ticket com QR gerado: {code}")
+
+                # Carrega configuração da impressora
+                config = load_config()
+                impressora = config.get("selected_printer")
+                
+                if not impressora:
+                    print(f"❌ Nenhuma impressora configurada!")
+                    return "Erro: Configure uma impressora nas Configurações", 500
+                
+                # Prepara comando de impressão
+                command = ['mspaint', '/pt', image_path, impressora]
+                
+                # Inicia processo assíncrono
+                try:
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    startupinfo.wShowWindow = subprocess.SW_HIDE
+                    
+                    subprocess.Popen(
+                        command, 
+                        stdout=subprocess.DEVNULL, 
+                        stderr=subprocess.DEVNULL,
+                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
+                        startupinfo=startupinfo if os.name == 'nt' else None
+                    )
+                    
+                    print(f"✅ Impressão QR enviada com sucesso - {code}")
+                    return "Impressão com QRCode realizada com sucesso", 200
+                    
+                except Exception as e:
+                    print(f"Erro ao enviar para impressão QR: {e}")
+                    return f"Erro ao imprimir QR: {e}", 500
+
+            except Exception as e:
+                print(f"Erro geral no endpoint /imprimir/qrcode: {e}")
+                return f"Erro ao imprimir QR: {e}", 500
+
+        @app.route('/status')
+        def status():
+            """Endpoint para verificar status do servidor"""
+            return "Servidor de impressão online", 200
+
+        @app.route('/shutdown', methods=['POST'])
+        def shutdown():
+            """Endpoint para desligar o servidor"""
+            self.running = False
+            func = flask_request.environ.get('werkzeug.server.shutdown')
+            if func is None:
+                raise RuntimeError('Not running with the Werkzeug Server')
+            func()
+            return 'Server shutting down...'
+            
+        return app
+    
+    def start(self):
+        """Inicia o servidor backend"""
+        if self.running:
+            return
+            
+        self.app = self.create_flask_app()
+        self.running = True
+        
+        def run_server():
+            try:
+                print("🚀 Iniciando servidor de impressão na porta 5000...")
+                if not os.path.exists('ticket'):
+                    os.makedirs('ticket')
+                    
+                # Configura logging para ser mais silencioso
+                log = logging.getLogger('werkzeug')
+                log.setLevel(logging.ERROR)
+                    
+                self.app.run(host='127.0.0.1', port=5000, debug=False, threaded=True, use_reloader=False)
+                
+            except Exception as e:
+                print(f"Erro no servidor de impressão: {e}")
+            finally:
+                self.running = False
+        
+        self.thread = threading.Thread(target=run_server, daemon=True)
+        self.thread.start()
+        print("✅ Servidor backend iniciado em thread separada")
+    
+    def stop(self):
+        """Para o servidor backend"""
+        if not self.running:
+            return
+            
+        try:
+            requests.post("http://localhost:5000/shutdown", timeout=2)
+            print("🛑 Servidor backend parado")
+        except:
+            print("⚠️ Servidor backend não respondeu ao shutdown")
+        
+        self.running = False
+
+
+class DesktopApp:
+    """Classe principal que gerencia o aplicativo desktop"""
+    def __init__(self):
+        self.backend = PrintingBackend()
+        self.tray_app = None
+        self.flet_process = None
+        self.gui_visible = False
+        self.message_queue = queue.Queue()
+        self.should_quit = False
+        
+    def start_backend(self):
+        """Inicia o backend"""
+        self.backend.start()
+        
+    def stop_backend(self):
+        """Para o backend"""
+        self.backend.stop()
+        
+    def create_gui(self):
+        """Cria e exibe a interface gráfica"""
+        if self.gui_visible:
+            return
+            
+        print("🎨 Iniciando interface gráfica...")
+        self.gui_visible = True
+        
+        # Executa Flet na thread principal
+        try:
+            ft.app(target=self.create_flet_app, port=0)
+        except Exception as e:
+            print(f"Erro na interface: {e}")
+        finally:
+            self.gui_visible = False
+        
+    def create_flet_app(self, page: ft.Page):
+        """Cria a aplicação Flet"""
+        # Chama a função main_gui passando a referência para este desktop_app
+        main_gui(page, self)
+        
+    def process_messages(self):
+        """Processa mensagens da queue de comunicação"""
+        try:
+            while not self.message_queue.empty():
+                message = self.message_queue.get_nowait()
+                
+                if message == "OPEN_GUI":
+                    if not self.gui_visible:
+                        print("🎨 Abrindo interface pela solicitação do tray...")
+                        self.create_gui()
+                    else:
+                        print("Interface já está visível")
+                        
+                elif message == "QUIT_APP":
+                    print("🔴 Processando solicitação de encerramento...")
+                    self.quit_application()
+                    
+        except queue.Empty:
+            pass
+        except Exception as e:
+            print(f"Erro ao processar mensagens: {e}")
+    
+    def quit_application(self):
+        """Encerra completamente o aplicativo"""
+        print("🔴 Encerrando aplicação...")
+        
+        # Marca para encerrar
+        self.should_quit = True
+        
+        # Para o backend
+        self.stop_backend()
+        
+        # Para o tray
+        if self.tray_app and self.tray_app.tray_icon:
+            try:
+                self.tray_app.tray_icon.stop()
+            except:
+                pass
+        
+        # Força o encerramento
+        os._exit(0)
+
+
+class TrayApp:
+    def __init__(self, desktop_app):
+        self.desktop_app = desktop_app
+        self.tray_icon = None
+        self.create_tray_icon()
+        
+    def create_tray_icon(self):
+        """Cria o ícone da bandeja do sistema"""
+        try:
+            # Tenta usar ícone personalizado se existe
+            if os.path.exists("assets/icon.ico"):
+                try:
+                    image = Image.open("assets/icon.ico")
+                except:
+                    # Fallback para imagem simples
+                    image = Image.new('RGB', (64, 64), color='blue')
+                    from PIL import ImageDraw
+                    draw = ImageDraw.Draw(image)
+                    draw.rectangle([16, 16, 48, 48], fill='white')
+            else:
+                # Cria uma imagem simples para o ícone
+                image = Image.new('RGB', (64, 64), color='blue')
+                from PIL import ImageDraw
+                draw = ImageDraw.Draw(image)
+                draw.rectangle([16, 16, 48, 48], fill='white')
+            
+            # Define o menu
+            menu = pystray.Menu(
+                pystray.MenuItem("Abrir Interface", self.show_window),
+                pystray.MenuItem("Status do Servidor", self.check_status),
+                pystray.MenuItem("Sair", self.quit_app)
+            )
+            
+            self.tray_icon = pystray.Icon("printing_app", image, "Serviço de Impressão", menu)
+            print("Ícone da bandeja criado com sucesso")
+            
+        except Exception as e:
+            print(f"Erro ao criar ícone da bandeja: {e}")
+            self.tray_icon = None
+    
+    def run_tray(self):
+        """Executa o ícone da bandeja em thread separada"""
+        retry_count = 0
+        max_retries = 3
+        
+        while retry_count < max_retries:
+            try:
+                if self.tray_icon:
+                    print(f"Iniciando ícone da bandeja (tentativa {retry_count + 1})")
+                    self.tray_icon.run_detached()
+                    print("Ícone da bandeja iniciado com sucesso")
+                    break
+                else:
+                    print("Ícone da bandeja não foi criado")
+                    break
+                    
+            except Exception as e:
+                retry_count += 1
+                print(f"Erro ao executar tray (tentativa {retry_count}): {e}")
+                if retry_count < max_retries:
+                    time.sleep(1)
+                    try:
+                        # Recria o ícone se houve erro
+                        self.create_tray_icon()
+                    except:
+                        pass
+    
+    def show_window(self, icon=None, item=None):
+        """Solicita abertura da interface gráfica via message queue"""
+        try:
+            print("📱 Solicitando abertura da interface...")
+            if not self.desktop_app.gui_visible:
+                # Envia mensagem para a thread principal abrir a GUI
+                self.desktop_app.message_queue.put("OPEN_GUI")
+                print("✅ Solicitação de abertura enviada")
+            else:
+                print("Interface já está aberta")
+        except Exception as e:
+            print(f"Erro ao solicitar janela: {e}")
+    
+    def check_status(self, icon=None, item=None):
+        """Verifica status do servidor"""
+        try:
+            response = requests.get("http://localhost:5000/status", timeout=5)
+            if response.status_code == 200:
+                self.show_notification("Servidor Online", "Serviço de impressão está rodando normalmente")
+            else:
+                self.show_notification("Servidor com Problemas", f"Status: {response.status_code}")
+        except Exception as e:
+            self.show_notification("Erro de Conexão", f"Não foi possível conectar ao servidor: {e}")
+    
+    def show_notification(self, title, message):
+        """Mostra notificação do sistema"""
+        if self.tray_icon:
+            self.tray_icon.notify(message, title)
+    
+    def quit_app(self, icon=None, item=None):
+        """Solicita encerramento do aplicativo via message queue"""
+        try:
+            print("🔴 Solicitando encerramento do aplicativo...")
+            self.desktop_app.message_queue.put("QUIT_APP")
+            self.desktop_app.should_quit = True
+        except Exception as e:
+            print(f"Erro ao solicitar encerramento: {e}")
+            os._exit(1)
+
+
+def main_gui(page: ft.Page, desktop_app):
     page.title = "Cliente de Impressão - Monitor"
     page.horizontal_alignment = ft.CrossAxisAlignment.STRETCH
     page.vertical_alignment = ft.MainAxisAlignment.START
@@ -132,9 +524,13 @@ def main(page: ft.Page):
     page.window_height = 720
     page.theme_mode = ft.ThemeMode.LIGHT
     
-    # Configuração para minimizar para bandeja
-    page.window_prevent_close = True
+    # Configuração para comportamento igual ao Spotify
+    page.window_minimizable = True
+    page.window_maximizable = True
     page.window_always_on_top = False
+    
+    # Variável para controlar se é um fechamento real ou apenas minimizar
+    page.real_close = False
 
     # Carrega configurações salvas
     config = load_config()
@@ -161,8 +557,10 @@ def main(page: ft.Page):
     printer_dropdown = ft.Ref[ft.Dropdown]()
     printer_status_text = ft.Ref[ft.Text]()
     
-    # Controle de estado da janela
-    window_state = {"minimized_to_tray": False, "really_close": False}
+    # Referência para o desktop app (para poder fechar a interface)
+    page.desktop_app = desktop_app
+    
+    # O tray é gerenciado pela classe DesktopApp, não aqui
 
     def append_simple_log(message, status="info"):
         """Adiciona log simplificado para o usuário"""
@@ -253,11 +651,11 @@ def main(page: ft.Page):
         if "printing server stopped" in l:
             append_simple_log("⏹️ Servidor parado", "error")
             return
-        if "servidor flask iniciado" in l:
+        if ("servidor flask iniciado" in l or "servidor de impressão na porta 5000" in l or 
+            "servidor backend iniciado" in l or "serving flask app" in l or 
+            "running on http://127.0.0.1:5000" in l):
             append_simple_log("🚀 Servidor iniciado", "success")
-            status_badge.content = ft.Text("Executando", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=14)
-            status_badge.bgcolor = ft.Colors.GREEN_600
-            page.update()
+            update_server_status(True)
             return
         if "fila da impressora" in l and "limpa" in l:
             append_simple_log("🧹 Fila de impressão limpa", "info")
@@ -375,11 +773,7 @@ def main(page: ft.Page):
             append_simple_log(f"🖨️ Impressora configurada: {selected_printer['name']}", "success")
             append_log(f"Impressora '{selected_printer['name']}' salva com sucesso", "INFO")
             
-            # Limpa cache das funções de impressão
-            if hasattr(imprimir, '_cached_printer'):
-                delattr(imprimir, '_cached_printer')
-            if hasattr(imprimir_qrcode, '_cached_printer'):
-                delattr(imprimir_qrcode, '_cached_printer')
+            # Cache de impressora será limpo automaticamente no backend
             
             # Fecha o diálogo automaticamente
             settings_dialog.current.open = False
@@ -562,189 +956,7 @@ def main(page: ft.Page):
             # Em caso de erro, assume que está online para não bloquear a impressão
             return True
 
-    # --- Flask integrado para endpoints de impressão ---
-    printing_app = Flask("printing_app")
-
-    @printing_app.route('/imprimir')
-    def imprimir():
-        try:
-            # Coleta parâmetros
-            created_date = flask_request.args.get('created_date', '')
-            code = flask_request.args.get('code', '')
-            services = flask_request.args.get('services', '')
-            header = flask_request.args.get('header', '')
-            footer = flask_request.args.get('footer', '')
-            
-            # Log de recebimento da requisição externa
-            append_log(f"📩 Nova impressão recebida", "INFO")
-            append_log(f"   Código: {code} | Serviços: {services}", "INFO")
-
-            # Gera imagem do ticket
-            image_generator = ImageGenerator(IMAGE_SIZE=(300, 300))
-            image_path = image_generator.create_image(
-                created_date=created_date, 
-                code=code, 
-                services=services, 
-                header=header, 
-                footer=footer
-            )
-            
-            append_log(f"🖼️ Ticket gerado: {code}", "INFO")
-
-            # Encontra impressora (usa cache para ser mais rápido)
-            if not hasattr(imprimir, '_cached_printer'):
-                imprimir._cached_printer = find_printer_matching('ticket-printer')
-                append_log(f"🖨️ Impressora: {imprimir._cached_printer}", "INFO")
-                    
-            impressora = imprimir._cached_printer
-            
-            # Valida se há impressora configurada
-            if not impressora or impressora == "Ticket-Printer":
-                # Se não encontrou, verifica se tem nas configurações
-                if not selected_printer["name"]:
-                    append_log(f"❌ Nenhuma impressora configurada!", "ERROR")
-                    return "Erro: Configure uma impressora nas Configurações", 500
-                impressora = selected_printer["name"]
-            
-            # Limpa a fila da impressora antes de imprimir
-            limpar_fila_impressora(impressora)
-            
-            # Prepara comando de impressão ultra-rápido
-            command = ['mspaint', '/pt', image_path, impressora]
-            
-            # Inicia processo completamente assíncrono (fire and forget)
-            # CREATE_NO_WINDOW evita janela de console piscando
-            try:
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = subprocess.SW_HIDE
-                
-                subprocess.Popen(
-                    command, 
-                    stdout=subprocess.DEVNULL, 
-                    stderr=subprocess.DEVNULL,
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
-                    startupinfo=startupinfo if os.name == 'nt' else None
-                )
-                
-                # Retorna IMEDIATAMENTE sem esperar nada
-                append_log(f"✅ Impressão enviada com sucesso - {code}", "INFO")
-                return "Impressão realizada com sucesso", 200
-                
-            except Exception as e:
-                append_log(f"Erro ao enviar para impressão: {e}", "ERROR")
-                return f"Erro ao imprimir: {e}", 500
-                    
-            except subprocess.TimeoutExpired:
-                append_log("Timeout na impressão - processo demorou muito", "ERROR")
-                return "Timeout na impressão", 500
-            except Exception as e:
-                append_log(f"Erro ao executar comando de impressão: {e}", "ERROR")
-                return f"Erro ao imprimir: {e}", 500
-
-        except Exception as e:
-            append_log(f"Erro geral no endpoint /imprimir: {e}", "ERROR")
-            return f"Erro ao imprimir: {e}", 500
-
-    @printing_app.route('/imprimir/qrcode')
-    def imprimir_qrcode():
-        try:
-            # Coleta parâmetros
-            created_date = flask_request.args.get('created_date', '')
-            code = flask_request.args.get('code', '')
-            services = flask_request.args.get('services', '')
-            header = flask_request.args.get('header', '')
-            footer = flask_request.args.get('footer', '')
-            qrcode_val = flask_request.args.get('qrcode', '')
-            
-            # Log de recebimento da requisição externa
-            append_log(f"📩 Nova impressão com QR recebida", "INFO")
-            append_log(f"   Código: {code} | QR: {qrcode_val[:30]}...", "INFO")
-
-            # Gera imagem com QR Code
-            image_generator = ImageGenerator(IMAGE_SIZE=(300, 300))
-            image_generator.create_image(
-                created_date=created_date, 
-                code=code, 
-                services=services, 
-                header=header, 
-                footer=footer
-            )
-            image_generator.create_qrcode(qrcode_val)
-            image_path = image_generator.combine()
-            
-            append_log(f"🖼️ Ticket com QR gerado: {code}", "INFO")
-
-            # Encontra impressora (usa cache para ser mais rápido)
-            if not hasattr(imprimir_qrcode, '_cached_printer'):
-                imprimir_qrcode._cached_printer = find_printer_matching('ticket-printer')
-                append_log(f"🖨️ Impressora: {imprimir_qrcode._cached_printer}", "INFO")
-                    
-            impressora = imprimir_qrcode._cached_printer
-            
-            # Valida se há impressora configurada
-            if not impressora or impressora == "Ticket-Printer":
-                # Se não encontrou, verifica se tem nas configurações
-                if not selected_printer["name"]:
-                    append_log(f"❌ Nenhuma impressora configurada!", "ERROR")
-                    return "Erro: Configure uma impressora nas Configurações", 500
-                impressora = selected_printer["name"]
-            
-            # Limpa a fila da impressora antes de imprimir
-            limpar_fila_impressora(impressora)
-            
-            # Prepara comando de impressão ultra-rápido
-            command = ['mspaint', '/pt', image_path, impressora]
-            
-            # Inicia processo completamente assíncrono (fire and forget)
-            # CREATE_NO_WINDOW evita janela de console piscando
-            try:
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = subprocess.SW_HIDE
-                
-                subprocess.Popen(
-                    command, 
-                    stdout=subprocess.DEVNULL, 
-                    stderr=subprocess.DEVNULL,
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
-                    startupinfo=startupinfo if os.name == 'nt' else None
-                )
-                
-                # Retorna IMEDIATAMENTE sem esperar nada
-                append_log(f"✅ Impressão QR enviada com sucesso - {code}", "INFO")
-                return "Impressão com QRCode realizada com sucesso", 200
-                
-            except Exception as e:
-                append_log(f"Erro ao enviar para impressão QR: {e}", "ERROR")
-                return f"Erro ao imprimir QR: {e}", 500
-
-        except Exception as e:
-            append_log(f"Erro geral no endpoint /imprimir/qrcode: {e}", "ERROR")
-            return f"Erro ao imprimir QR: {e}", 500
-
-    @printing_app.route('/status')
-    def status():
-        """Endpoint para verificar status do servidor"""
-        return "Servidor de impressão online", 200
-
-    def run_printing_server():
-        """Executa o servidor Flask em background"""
-        try:
-            append_log("Iniciando servidor de impressão na porta 5000...", "INFO")
-            if not os.path.exists('ticket'):
-                os.makedirs('ticket')
-                append_log("Diretório 'ticket' criado", "INFO")
-                
-            append_log("Servidor Flask iniciado em http://127.0.0.1:5000", "INFO")
-            printing_app.run(host='127.0.0.1', port=5000, debug=False, threaded=True)
-            
-        except Exception as e:
-            append_log(f"Erro no servidor de impressão: {e}", "ERROR")
-
-    # Inicia servidor em thread separada
-    server_thread = threading.Thread(target=run_printing_server, daemon=True)
-    server_thread.start()
+    # O servidor Flask agora é gerenciado pela classe PrintingBackend
 
     def toggle_logs(e):
         """Alterna entre logs simples e avançados"""
@@ -810,34 +1022,82 @@ def main(page: ft.Page):
     def handle_test_status(e):
         call_endpoint("/status")
 
-    # Funções de controle de janela
-    window_state = {"minimized_to_tray": False, "really_close": False}
+    # ========== FUNÇÕES DE GERENCIAMENTO DA INTERFACE ==========
     
-    def show_window(e):
-        """Mostra a janela novamente"""
-        page.window_visible = True
-        window_state["minimized_to_tray"] = False
-        page.update()
-        append_log("Janela restaurada da bandeja", "INFO")
-    
-    def quit_app(e):
-        """Encerra o aplicativo completamente"""
-        append_log("Encerrando aplicação...", "INFO")
-        window_state["really_close"] = True
-        stop_flag.set()
-        # Aguarda um momento para exibir os logs
-        page.update()
-        threading.Timer(0.5, lambda: os._exit(0)).start()
-
-    def on_window_event(e):
-        """Gerencia eventos da janela"""
-        if e.data == "close":
-            # Sempre minimiza para bandeja (usuário deve usar botão Sair para fechar)
+    def minimize_to_tray(e=None):
+        """Minimiza a janela para a bandeja do sistema"""
+        try:
+            append_log("Minimizando aplicação para bandeja do sistema...", "INFO")
+            append_simple_log("🔽 Aplicação minimizada para bandeja", "info")
+            
+            # Oculta a janela
             page.window_visible = False
-            window_state["minimized_to_tray"] = True
-            append_log("Aplicação minimizada para bandeja do sistema", "INFO")
-            append_simple_log("🔽 Minimizado para bandeja - Use o botão Sair para fechar", "info")
+            
+            # Mostra notificação
+            if desktop_app.tray_app:
+                desktop_app.tray_app.show_notification(
+                    "Serviço de Impressão", 
+                    "Aplicação minimizada para bandeja. Continua rodando em segundo plano.\n\n"
+                    "Clique com o botão direito no ícone da bandeja para abrir ou sair."
+                )
+            
             page.update()
+            
+        except Exception as ex:
+            append_log(f"Erro ao minimizar para bandeja: {ex}", "ERROR")
+    
+    def restore_from_tray():
+        """Restaura a janela da bandeja"""
+        try:
+            page.window_visible = True
+            page.window_minimized = False
+            page.window_to_front()
+            page.update()
+            append_log("Janela restaurada da bandeja", "INFO")
+        except Exception as ex:
+            append_log(f"Erro ao restaurar janela: {ex}", "ERROR")
+    
+    def on_window_event(e):
+        """Gerencia eventos da janela - Interface permanece ativa em segundo plano"""
+        print(f"Evento de janela: {e.data}")
+        
+        if e.data == "close":
+            # Interface continua rodando em segundo plano: X apenas oculta a janela
+            print("X clicado - minimizando interface para bandeja do sistema")
+            
+            # Marca como não visível
+            desktop_app.gui_visible = False
+            
+            # Mostra notificação
+            if desktop_app.tray_app:
+                desktop_app.tray_app.show_notification(
+                    "Serviço de Impressão", 
+                    "Interface fechada. Aplicativo continua na bandeja.\n\n"
+                    "Clique com o botão direito no ícone da bandeja para reabrir."
+                )
+            
+            # Permite que o Flet feche a janela normalmente
+            # O loop principal vai manter o aplicativo vivo
+            return
+        
+        elif e.data == "minimize":
+            # Minimizar normal - deixa o sistema gerenciar
+            print("Minimizando janela...")
+            # Não fazemos nada especial aqui
+        
+    def quit_app(e=None):
+        """Encerra o aplicativo completamente - apenas quando usuário escolhe Sair"""
+        try:
+            append_log("Encerrando aplicação por solicitação do usuário...", "INFO")
+            
+            # Chama o método de encerramento da classe DesktopApp
+            desktop_app.quit_application()
+            
+        except Exception as ex:
+            print(f"Erro ao sair: {ex}")
+            os._exit(0)
+
+    # ========== FIM DAS FUNÇÕES DE GERENCIAMENTO ==========
 
     # Toggle de logs
     log_toggle = ft.Row(
@@ -917,11 +1177,18 @@ def main(page: ft.Page):
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
     )
 
+    # Botão de minimizar adicionado
     controls_bar = ft.Row(
         [
             logo_and_title,
             status_badge,
             ft.Container(expand=True),
+            ft.IconButton(
+                icon=ft.Icons.MINIMIZE,
+                tooltip="Minimizar para Bandeja",
+                on_click=minimize_to_tray,
+                icon_color=ft.Colors.BLUE_700,
+            ),
             ft.IconButton(
                 icon=ft.Icons.SETTINGS,
                 tooltip="Configurações",
@@ -929,6 +1196,12 @@ def main(page: ft.Page):
                 icon_color=ft.Colors.BLUE_700,
             ),
             ft.FilledTonalButton("Testar Status", icon=ft.Icons.SEARCH, on_click=handle_test_status),
+            ft.IconButton(
+                icon=ft.Icons.REFRESH,
+                tooltip="Atualizar Status do Servidor",
+                on_click=lambda e: threading.Thread(target=monitor_server_status, daemon=True).start(),
+                icon_color=ft.Colors.GREEN_700,
+            ),
             ft.FilledTonalButton("Testar Impressão", icon=ft.Icons.PRINT, on_click=handle_test_print),
             ft.FilledTonalButton("Testar QRCode", icon=ft.Icons.QR_CODE_2, on_click=handle_test_qr),
             ft.FilledButton(
@@ -1009,33 +1282,157 @@ def main(page: ft.Page):
         append_simple_log("⚠️ Configure a impressora", "warning")
     
     append_log("Servidor de impressão inicializando...", "INFO")
-    append_simple_log("💡 Fechar a janela minimiza para bandeja", "info")
+    append_simple_log("💡 Clique no X para minimizar para bandeja do sistema", "info")
     
-    # Testa se o servidor está respondendo após um breve delay
+    # Configura o evento de janela - Interface permanece em segundo plano
+    page.on_window_event = on_window_event
+    print("✅ Sistema configurado - Interface minimiza para bandeja ao fechar")
+    
+    # Função para verificar e atualizar o status do servidor
     def check_server_status():
         time.sleep(2)
         try:
             response = requests.get("http://localhost:5000/status", timeout=5)
             if response.status_code == 200:
                 append_simple_log("✅ Servidor de impressão online", "success")
+                # Atualiza o status badge para EXECUTANDO
+                status_badge.content = ft.Text("Executando", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=14)
+                status_badge.bgcolor = ft.Colors.GREEN_600
+                page.update()
+                
+                if desktop_app.tray_app:
+                    desktop_app.tray_app.show_notification("Serviço Iniciado", "Servidor de impressão está online e pronto para uso")
             else:
                 append_simple_log("⚠️ Servidor respondendo com erro", "warning")
         except:
             append_simple_log("⏳ Aguardando servidor inicializar...", "info")
-
-    threading.Thread(target=check_server_status, daemon=True).start()
-
-    # Configura o evento de janela
-    page.on_window_event = on_window_event
     
-    # Configuração do ícone da bandeja
-    page.window_title_bar_hidden = False
-    page.window_title_bar_buttons_hidden = False
+    # Função para atualizar status do servidor
+    def update_server_status(online=True):
+        """Atualiza o status badge do servidor"""
+        if online:
+            status_badge.content = ft.Text("Executando", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=14)
+            status_badge.bgcolor = ft.Colors.GREEN_600
+        else:
+            status_badge.content = ft.Text("Parado", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=14)
+            status_badge.bgcolor = ft.Colors.RED_600
+        page.update()
     
-    # Adiciona ícone de bandeja (system tray)
-    if hasattr(page, 'system_overlay_style'):
-        page.system_overlay_style = ft.SystemOverlayStyle.DARK
+    # Função para verificação inicial imediata (caso o servidor já esteja rodando)
+    def check_initial_status():
+        try:
+            response = requests.get("http://localhost:5000/status", timeout=2)
+            if response.status_code == 200:
+                append_simple_log("✅ Servidor já estava online", "success")
+                update_server_status(True)
+                return True
+            else:
+                # Agenda a verificação normal com delay
+                threading.Thread(target=check_server_status, daemon=True).start()
+                return False
+        except:
+            # Servidor ainda não está pronto, agenda a verificação normal
+            threading.Thread(target=check_server_status, daemon=True).start()
+            return False
+    
+    # Função para verificação contínua do status
+    def monitor_server_status():
+        """Monitora o status do servidor continuamente"""
+        attempts = 0
+        max_attempts = 10
+        
+        while attempts < max_attempts:
+            try:
+                response = requests.get("http://localhost:5000/status", timeout=3)
+                if response.status_code == 200:
+                    append_simple_log("✅ Servidor de impressão online", "success")
+                    update_server_status(True)
+                    
+                    if desktop_app.tray_app:
+                        desktop_app.tray_app.show_notification("Serviço Iniciado", "Servidor de impressão está online e pronto para uso")
+                    
+                    return True
+                else:
+                    append_simple_log("⚠️ Servidor respondendo com erro", "warning")
+                    
+            except Exception as e:
+                append_simple_log(f"⏳ Tentativa {attempts + 1}/{max_attempts} - Aguardando servidor...", "info")
+                
+            attempts += 1
+            time.sleep(1)  # Espera 1 segundo entre tentativas
+        
+        # Se chegou aqui, o servidor não respondeu após todas as tentativas
+        append_simple_log("❌ Servidor não respondeu após múltiplas tentativas", "error")
+        return False
+    
+    # Executa verificação inicial e depois monitora
+    if not check_initial_status():
+        # Se a verificação inicial falhou, inicia monitoramento
+        threading.Thread(target=monitor_server_status, daemon=True).start()
+
+
+def main():
+    """Função principal que inicializa o aplicativo desktop"""
+    print("🚀 Iniciando Sistema de Impressão de Senhas...")
+    
+    # Cria a instância principal do aplicativo
+    desktop_app = DesktopApp()
+    
+    # Inicializa o backend (servidor Flask)
+    desktop_app.start_backend()
+    
+    # Aguarda um pouco para o backend inicializar
+    time.sleep(1)
+    
+    # Cria o tray app
+    desktop_app.tray_app = TrayApp(desktop_app)
+    
+    # Inicia o tray em thread separada
+    try:
+        if desktop_app.tray_app.tray_icon:
+            tray_thread = threading.Thread(target=desktop_app.tray_app.run_tray, daemon=True)
+            tray_thread.start()
+            print("✅ Ícone da bandeja iniciado")
+        else:
+            print("⚠️ Falha ao criar ícone da bandeja")
+    except Exception as e:
+        print(f"❌ Erro ao iniciar ícone da bandeja: {e}")
+    
+    # Aguarda mais um pouco para tudo inicializar
+    time.sleep(0.5)
+    
+    print("✅ Backend e tray inicializados com sucesso!")
+    print("🔄 Backend rodando em background")
+    print("📍 Ícone disponível na bandeja do sistema")
+    
+    # Inicia a interface gráfica na thread principal
+    print("🎨 Iniciando interface gráfica...")
+    try:
+        desktop_app.create_gui()
+    except KeyboardInterrupt:
+        print("🔴 Interrompido pelo usuário")
+    except Exception as e:
+        print(f"❌ Erro na interface: {e}")
+    
+    # Interface fechada - mas o aplicativo continua rodando via tray
+    print("📱 Interface fechada - aplicativo continua na bandeja")
+    print("🔍 Monitorando mensagens do tray...")
+    
+    # Loop principal que mantém o aplicativo vivo e processa mensagens
+    try:
+        while desktop_app.tray_app and desktop_app.tray_app.tray_icon and not desktop_app.should_quit:
+            # Processa mensagens da queue
+            desktop_app.process_messages()
+            
+            # Pequena pausa para não consumir muito CPU
+            time.sleep(0.1)
+            
+    except KeyboardInterrupt:
+        print("🔴 Interrompido pelo usuário (Ctrl+C)")
+        desktop_app.quit_application()
+    
+    print("🏁 Loop principal encerrado")
 
 
 if __name__ == "__main__":
-    ft.app(target=main)
+    main()

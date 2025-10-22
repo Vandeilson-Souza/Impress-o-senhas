@@ -31,7 +31,12 @@ MANIFEST
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
-*.spec
+# *.spec  # Mantemos o .spec pois é necessário para o build
+
+# Arquivos específicos do Sistema de Impressão
+printer_config.json      # Configurações locais da impressora
+ticket/                  # Imagens de tickets geradas
+*.exe                    # Executáveis compilados
 
 # Installer logs
 pip-log.txt
